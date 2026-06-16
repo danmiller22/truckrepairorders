@@ -1,10 +1,23 @@
-import { getSession } from "./state.ts";
 import { texts } from "./i18n.ts";
 import { langKeyboard, confirmKeyboard, newReportKeyboard } from "./keyboards.ts";
 import { sendMessage } from "./utils.ts";
 
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
+
+// MEMORY FIX (STABLE SESSION)
+const sessions = new Map<number, any>();
+
+function getSession(id: number) {
+  if (!sessions.has(id)) {
+    sessions.set(id, {
+      step: "lang",
+      lang: "en",
+      data: { photos: [] }
+    });
+  }
+  return sessions.get(id);
+}
 
 async function sendMediaGroup(photos: string[]) {
   const media = photos.map((id, i) => ({
@@ -16,14 +29,11 @@ async function sendMediaGroup(photos: string[]) {
   await fetch(`https://api.telegram.org/bot${TOKEN}/sendMediaGroup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: GROUP,
-      media
-    })
+    body: JSON.stringify({ chat_id: GROUP, media })
   });
 }
 
-async function handler(req: Request) {
+Deno.serve(async (req) => {
   const update = await req.json();
 
   // ================= MESSAGE =================
@@ -36,50 +46,80 @@ async function handler(req: Request) {
     // START
     if (msg.text === "/start") {
       session.step = "lang";
-      await sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard());
-      return new Response("ok");
+      return sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard())
+        .then(() => new Response("ok"));
     }
 
-    // FLOW STEPS
+    // LANG CALLBACK FIX (text fallback safety)
+    if (msg.text === "lang_ru") {
+      session.lang = "ru";
+      session.step = "name";
+      return sendMessage(TOKEN, msg.chat.id, texts.ru.ask_name)
+        .then(() => new Response("ok"));
+    }
+
+    if (msg.text === "lang_en") {
+      session.lang = "en";
+      session.step = "name";
+      return sendMessage(TOKEN, msg.chat.id, texts.en.ask_name)
+        .then(() => new Response("ok"));
+    }
+
+    // SAFE FLOW (CRITICAL FIX - prevents dead step)
+    if (!session.step) {
+      session.step = "name";
+    }
+
+    // NAME
     if (session.step === "name") {
       session.data.name = msg.text;
       session.step = "truck";
-      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_truck);
-      return new Response("ok");
+
+      return sendMessage(TOKEN, msg.chat.id, texts[lang].ask_truck)
+        .then(() => new Response("ok"));
     }
 
+    // TRUCK
     if (session.step === "truck") {
       session.data.truck = msg.text;
       session.step = "issue";
-      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_issue);
-      return new Response("ok");
+
+      return sendMessage(TOKEN, msg.chat.id, texts[lang].ask_issue)
+        .then(() => new Response("ok"));
     }
 
+    // ISSUE
     if (session.step === "issue") {
       session.data.issue = msg.text;
       session.step = "drop";
-      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_drop);
-      return new Response("ok");
+
+      return sendMessage(TOKEN, msg.chat.id, texts[lang].ask_drop)
+        .then(() => new Response("ok"));
     }
 
+    // DROP
     if (session.step === "drop") {
       session.data.dropDate = msg.text;
       session.step = "pickup";
-      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_pickup);
-      return new Response("ok");
+
+      return sendMessage(TOKEN, msg.chat.id, texts[lang].ask_pickup)
+        .then(() => new Response("ok"));
     }
 
+    // PICKUP
     if (session.step === "pickup") {
       session.data.pickupDate = msg.text;
       session.step = "photos";
-      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_photos);
-      return new Response("ok");
+
+      return sendMessage(TOKEN, msg.chat.id, texts[lang].ask_photos)
+        .then(() => new Response("ok"));
     }
 
+    // PHOTOS (SAFE)
     if (session.step === "photos") {
       if (!msg.photo) {
-        await sendMessage(TOKEN, msg.chat.id, texts[lang].need_photo);
-        return new Response("ok");
+        return sendMessage(TOKEN, msg.chat.id, texts[lang].need_photo)
+          .then(() => new Response("ok"));
       }
 
       const fileId = msg.photo[msg.photo.length - 1].file_id;
@@ -98,18 +138,12 @@ async function handler(req: Request) {
 
       session.step = "confirm";
 
-      await sendMessage(
-        TOKEN,
-        msg.chat.id,
-        texts[lang].confirm,
-        confirmKeyboard(lang)
-      );
-
-      return new Response("ok");
+      return sendMessage(TOKEN, msg.chat.id, texts[lang].confirm, confirmKeyboard(lang))
+        .then(() => new Response("ok"));
     }
   }
 
-  // ================= CALLBACK (FIXED!) =================
+  // ================= CALLBACK =================
   if (update.callback_query) {
     const cq = update.callback_query;
     const session = getSession(cq.from.id);
@@ -117,25 +151,27 @@ async function handler(req: Request) {
     const lang = session.lang || "en";
     const data = cq.data;
 
-    // ✅ LANGUAGE FIX (MAIN BUG FIX)
+    // LANGUAGE FIX
     if (data === "lang_ru") {
       session.lang = "ru";
       session.step = "name";
 
-      await sendMessage(TOKEN, cq.message.chat.id, texts.ru.ask_name);
+      return sendMessage(TOKEN, cq.message.chat.id, texts.ru.ask_name)
+        .then(() => new Response("ok"));
     }
 
     if (data === "lang_en") {
       session.lang = "en";
       session.step = "name";
 
-      await sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name);
+      return sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name)
+        .then(() => new Response("ok"));
     }
 
     // CONFIRM
     if (data === "confirm") {
 
-      await sendMessage(
+      sendMessage(
         TOKEN,
         GROUP,
 `🚛 Truck Repair Order
@@ -149,43 +185,30 @@ async function handler(req: Request) {
 `
       );
 
-      if (session.data.photos.length > 0) {
-        await sendMediaGroup(session.data.photos);
+      if (session.data.photos.length) {
+        sendMediaGroup(session.data.photos);
       }
 
-      await sendMessage(
+      return sendMessage(
         TOKEN,
         cq.message.chat.id,
         texts[lang].sent,
         newReportKeyboard(lang)
-      );
-
-      session.step = "done";
+      ).then(() => new Response("ok"));
     }
 
-    // NEW REPORT (FIXED)
+    // NEW REPORT (CRITICAL FIX)
     if (data === "new") {
-
-      const l = session.lang || "en";
-
       session.step = "name";
-      session.data = {
-        photos: [],
-        dropDate: "",
-        pickupDate: ""
-      };
+      session.data = { photos: [] };
 
-      await sendMessage(
+      return sendMessage(
         TOKEN,
         cq.message.chat.id,
-        texts[l].ask_name
-      );
+        texts[lang].ask_name
+      ).then(() => new Response("ok"));
     }
-
-    return new Response("ok");
   }
 
   return new Response("ok");
-}
-
-Deno.serve(handler);
+});
