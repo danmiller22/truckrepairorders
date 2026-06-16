@@ -26,21 +26,33 @@ async function sendMediaGroup(photos: string[]) {
 async function handler(req: Request) {
   const update = await req.json();
 
-  // ================= MESSAGE =================
   if (update.message) {
     const msg = update.message;
     const session = getSession(msg.from.id);
-    const lang = session.lang || "en";
 
-    // START
+    // 🔥 ALWAYS LOCK LANGUAGE
+    if (!session.lang) session.lang = "en";
+    const lang = session.lang;
+
+    // START (ONLY LANGUAGE SELECTION)
     if (msg.text === "/start") {
       session.step = "lang";
       await sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard());
       return new Response("ok");
     }
 
-    // LANGUAGE LOCK FIX
-    if (session.step === "lang") {
+    // LANGUAGE SELECT
+    if (msg.text === "lang_ru") {
+      session.lang = "ru";
+      session.step = "name";
+      await sendMessage(TOKEN, msg.chat.id, texts.ru.ask_name);
+      return new Response("ok");
+    }
+
+    if (msg.text === "lang_en") {
+      session.lang = "en";
+      session.step = "name";
+      await sendMessage(TOKEN, msg.chat.id, texts.en.ask_name);
       return new Response("ok");
     }
 
@@ -67,56 +79,40 @@ async function handler(req: Request) {
       session.data.issue = msg.text;
       session.step = "drop";
 
-      await sendMessage(
-        TOKEN,
-        msg.chat.id,
-        texts[lang].ask_drop
-      );
+      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_drop);
       return new Response("ok");
     }
 
-    // DROP DATE
+    // DROP
     if (session.step === "drop") {
       session.data.dropDate = msg.text;
       session.step = "pickup";
 
-      await sendMessage(
-        TOKEN,
-        msg.chat.id,
-        texts[lang].ask_pickup
-      );
+      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_pickup);
       return new Response("ok");
     }
 
-    // PICKUP DATE
+    // PICKUP
     if (session.step === "pickup") {
       session.data.pickupDate = msg.text;
       session.step = "photos";
 
-      await sendMessage(
-        TOKEN,
-        msg.chat.id,
-        texts[lang].ask_photos
-      );
+      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_photos);
       return new Response("ok");
     }
 
-    // PHOTOS FIX
+    // PHOTOS
     if (session.step === "photos") {
 
       if (!msg.photo) {
-        await sendMessage(
-          TOKEN,
-          msg.chat.id,
-          texts[lang].need_photo
-        );
+        await sendMessage(TOKEN, msg.chat.id, texts[lang].need_photo);
         return new Response("ok");
       }
 
       const fileId = msg.photo[msg.photo.length - 1].file_id;
       session.data.photos.push(fileId);
 
-      const preview =
+      session.data.preview =
 `🚛 Truck Repair Order
 
 👤 Name: ${session.data.name}
@@ -127,7 +123,6 @@ async function handler(req: Request) {
 📅 Pickup: ${session.data.pickupDate}
 `;
 
-      session.data.preview = preview;
       session.step = "confirm";
 
       await sendMessage(
@@ -141,25 +136,15 @@ async function handler(req: Request) {
     }
   }
 
-  // ================= CALLBACK =================
+  // CALLBACKS
   if (update.callback_query) {
     const cq = update.callback_query;
     const session = getSession(cq.from.id);
-    const lang = session.lang || "en";
+
+    if (!session.lang) session.lang = "en";
+    const lang = session.lang;
+
     const data = cq.data;
-
-    // LANGUAGE FIXED
-    if (data === "lang_ru") {
-      session.lang = "ru";
-      session.step = "name";
-      await sendMessage(TOKEN, cq.message.chat.id, texts.ru.ask_name);
-    }
-
-    if (data === "lang_en") {
-      session.lang = "en";
-      session.step = "name";
-      await sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name);
-    }
 
     // CONFIRM
     if (data === "confirm") {
@@ -192,22 +177,22 @@ async function handler(req: Request) {
       session.step = "done";
     }
 
-    // NEW
+    // NEW REPORT 🔥 FIXED LANGUAGE BUG HERE
     if (data === "new") {
-      session.step = "name";
-      session.data = { photos: [] };
 
+      session.step = "name";
+      session.data = {
+        photos: [],
+        dropDate: "",
+        pickupDate: ""
+      };
+
+      // ❗ IMPORTANT: always use session.lang
       await sendMessage(
         TOKEN,
         cq.message.chat.id,
-        texts[lang].ask_name
+        texts[session.lang || "en"].ask_name
       );
-    }
-
-    // CANCEL
-    if (data === "cancel") {
-      session.step = "done";
-      await sendMessage(TOKEN, cq.message.chat.id, "Cancelled");
     }
 
     return new Response("ok");
