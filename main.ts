@@ -1,7 +1,7 @@
 import { getSession } from "./state.ts";
 import { texts } from "./i18n.ts";
 import { langKeyboard, confirmKeyboard, newReportKeyboard } from "./keyboards.ts";
-import { sendMessage, sendPhoto } from "./utils.ts";
+import { sendMessage } from "./utils.ts";
 
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
@@ -9,100 +9,135 @@ const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 async function handler(req: Request) {
   const update = await req.json();
 
+  // ---------------- TEXT MESSAGES ----------------
   if (update.message) {
     const msg = update.message;
     const userId = msg.from.id;
     const session = getSession(userId);
 
+    // START
     if (msg.text === "/start") {
       session.step = "lang";
       await sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard());
       return new Response("ok");
     }
 
+    // LANGUAGE SELECT LOCK
     if (session.step === "lang") {
       return new Response("ok");
     }
 
+    // NAME
     if (session.step === "name") {
       session.data.name = msg.text;
       session.step = "truck";
+
       await sendMessage(TOKEN, msg.chat.id, texts[session.lang].ask_truck);
       return new Response("ok");
     }
 
+    // TRUCK
     if (session.step === "truck") {
       session.data.truck = msg.text;
       session.step = "issue";
+
       await sendMessage(TOKEN, msg.chat.id, texts[session.lang].ask_issue);
       return new Response("ok");
     }
 
+    // ISSUE (FIXED LOGIC)
     if (session.step === "issue") {
       session.data.issue = msg.text;
       session.step = "photos";
+
       await sendMessage(TOKEN, msg.chat.id, texts[session.lang].ask_photos);
       return new Response("ok");
     }
 
+    // PHOTOS STEP (FIXED - NO FREEZE ANYMORE)
     if (session.step === "photos") {
-      if (msg.photo) {
-        const fileId = msg.photo[msg.photo.length - 1].file_id;
-        session.data.photos.push(fileId);
+      if (!msg.photo) {
+        await sendMessage(
+          TOKEN,
+          msg.chat.id,
+          "📸 Please send at least 1 photo of the issue / Отправьте фото поломки"
+        );
+        return new Response("ok");
       }
 
-      const caption = `
-Truck Repair Order
+      const fileId = msg.photo[msg.photo.length - 1].file_id;
+      session.data.photos.push(fileId);
 
-Name: ${session.data.name || ""}
-Truck: ${session.data.truck || ""}
-Issue: ${session.data.issue || ""}
+      const preview =
+`🚛 Truck Repair Order
+
+👤 Name: ${session.data.name || ""}
+🚚 Truck: ${session.data.truck || ""}
+🔧 Issue: ${session.data.issue || ""}
 `;
 
-      await sendMessage(TOKEN, msg.chat.id, texts[session.lang].confirm, confirmKeyboard(session.lang));
-
+      session.data.preview = preview;
       session.step = "confirm";
-      session.data.preview = caption;
+
+      await sendMessage(
+        TOKEN,
+        msg.chat.id,
+        texts[session.lang].confirm,
+        confirmKeyboard(session.lang)
+      );
+
       return new Response("ok");
     }
   }
 
+  // ---------------- CALLBACK BUTTONS ----------------
   if (update.callback_query) {
     const cq = update.callback_query;
     const userId = cq.from.id;
     const session = getSession(userId);
-
     const data = cq.data;
 
+    // LANGUAGE
     if (data === "lang_ru") {
       session.lang = "ru";
       session.step = "name";
+
       await sendMessage(TOKEN, cq.message.chat.id, texts.ru.ask_name);
     }
 
     if (data === "lang_en") {
       session.lang = "en";
       session.step = "name";
+
       await sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name);
     }
 
+    // CONFIRM → SEND TO GROUP
     if (data === "confirm") {
-      const text = session.data.preview;
+      await sendMessage(TOKEN, GROUP, session.data.preview);
 
-      await sendMessage(TOKEN, GROUP, text);
-      await sendMessage(TOKEN, cq.message.chat.id, texts[session.lang].sent, newReportKeyboard(session.lang));
+      await sendMessage(
+        TOKEN,
+        cq.message.chat.id,
+        texts[session.lang].sent,
+        newReportKeyboard(session.lang)
+      );
 
       session.step = "done";
     }
 
+    // NEW REPORT
     if (data === "new") {
       session.step = "name";
       session.data = { photos: [] };
+
       await sendMessage(TOKEN, cq.message.chat.id, texts[session.lang].ask_name);
     }
 
+    // CANCEL
     if (data === "cancel") {
       session.step = "done";
+
       await sendMessage(TOKEN, cq.message.chat.id, "Cancelled");
     }
 
