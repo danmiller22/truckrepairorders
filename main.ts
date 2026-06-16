@@ -6,7 +6,6 @@ import { sendMessage } from "./utils.ts";
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
-// send photos to group
 async function sendMediaGroup(photos: string[]) {
   const media = photos.map((id, i) => ({
     type: "photo",
@@ -31,10 +30,17 @@ async function handler(req: Request) {
   if (update.message) {
     const msg = update.message;
     const session = getSession(msg.from.id);
+    const lang = session.lang || "en";
 
+    // START
     if (msg.text === "/start") {
       session.step = "lang";
       await sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard());
+      return new Response("ok");
+    }
+
+    // LANGUAGE LOCK FIX
+    if (session.step === "lang") {
       return new Response("ok");
     }
 
@@ -43,7 +49,7 @@ async function handler(req: Request) {
       session.data.name = msg.text;
       session.step = "truck";
 
-      await sendMessage(TOKEN, msg.chat.id, texts[session.lang].ask_truck);
+      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_truck);
       return new Response("ok");
     }
 
@@ -52,7 +58,7 @@ async function handler(req: Request) {
       session.data.truck = msg.text;
       session.step = "issue";
 
-      await sendMessage(TOKEN, msg.chat.id, texts[session.lang].ask_issue);
+      await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_issue);
       return new Response("ok");
     }
 
@@ -64,7 +70,7 @@ async function handler(req: Request) {
       await sendMessage(
         TOKEN,
         msg.chat.id,
-        "📅 When are you leaving the truck? / Когда оставляете трак?"
+        texts[lang].ask_drop
       );
       return new Response("ok");
     }
@@ -77,7 +83,7 @@ async function handler(req: Request) {
       await sendMessage(
         TOKEN,
         msg.chat.id,
-        "📅 When will you pick up the truck? / Когда забираете трак?"
+        texts[lang].ask_pickup
       );
       return new Response("ok");
     }
@@ -90,18 +96,19 @@ async function handler(req: Request) {
       await sendMessage(
         TOKEN,
         msg.chat.id,
-        texts[session.lang].ask_photos
+        texts[lang].ask_photos
       );
       return new Response("ok");
     }
 
-    // PHOTOS
+    // PHOTOS FIX
     if (session.step === "photos") {
+
       if (!msg.photo) {
         await sendMessage(
           TOKEN,
           msg.chat.id,
-          "📸 Send at least 1 photo / Отправьте фото"
+          texts[lang].need_photo
         );
         return new Response("ok");
       }
@@ -126,8 +133,8 @@ async function handler(req: Request) {
       await sendMessage(
         TOKEN,
         msg.chat.id,
-        texts[session.lang].confirm,
-        confirmKeyboard(session.lang)
+        texts[lang].confirm,
+        confirmKeyboard(lang)
       );
 
       return new Response("ok");
@@ -138,9 +145,10 @@ async function handler(req: Request) {
   if (update.callback_query) {
     const cq = update.callback_query;
     const session = getSession(cq.from.id);
+    const lang = session.lang || "en";
     const data = cq.data;
 
-    // LANGUAGE
+    // LANGUAGE FIXED
     if (data === "lang_ru") {
       session.lang = "ru";
       session.step = "name";
@@ -153,10 +161,9 @@ async function handler(req: Request) {
       await sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name);
     }
 
-    // CONFIRM → GROUP + PHOTOS
+    // CONFIRM
     if (data === "confirm") {
 
-      // TEXT CARD
       await sendMessage(
         TOKEN,
         GROUP,
@@ -171,7 +178,6 @@ async function handler(req: Request) {
 `
       );
 
-      // PHOTOS
       if (session.data.photos.length > 0) {
         await sendMediaGroup(session.data.photos);
       }
@@ -179,14 +185,14 @@ async function handler(req: Request) {
       await sendMessage(
         TOKEN,
         cq.message.chat.id,
-        texts[session.lang].sent,
-        newReportKeyboard(session.lang)
+        texts[lang].sent,
+        newReportKeyboard(lang)
       );
 
       session.step = "done";
     }
 
-    // NEW REPORT
+    // NEW
     if (data === "new") {
       session.step = "name";
       session.data = { photos: [] };
@@ -194,7 +200,7 @@ async function handler(req: Request) {
       await sendMessage(
         TOKEN,
         cq.message.chat.id,
-        texts[session.lang].ask_name
+        texts[lang].ask_name
       );
     }
 
