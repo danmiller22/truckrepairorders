@@ -6,6 +6,7 @@ import { sendMessage } from "./utils.ts";
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
+// send photos to group
 async function sendMediaGroup(photos: string[]) {
   const media = photos.map((id, i) => ({
     type: "photo",
@@ -31,7 +32,6 @@ async function handler(req: Request) {
     const msg = update.message;
     const session = getSession(msg.from.id);
 
-    // START
     if (msg.text === "/start") {
       session.step = "lang";
       await sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard());
@@ -59,13 +59,43 @@ async function handler(req: Request) {
     // ISSUE
     if (session.step === "issue") {
       session.data.issue = msg.text;
-      session.step = "photos";
+      session.step = "drop";
 
-      await sendMessage(TOKEN, msg.chat.id, texts[session.lang].ask_photos);
+      await sendMessage(
+        TOKEN,
+        msg.chat.id,
+        "📅 When are you leaving the truck? / Когда оставляете трак?"
+      );
       return new Response("ok");
     }
 
-    // PHOTOS (FIXED)
+    // DROP DATE
+    if (session.step === "drop") {
+      session.data.dropDate = msg.text;
+      session.step = "pickup";
+
+      await sendMessage(
+        TOKEN,
+        msg.chat.id,
+        "📅 When will you pick up the truck? / Когда забираете трак?"
+      );
+      return new Response("ok");
+    }
+
+    // PICKUP DATE
+    if (session.step === "pickup") {
+      session.data.pickupDate = msg.text;
+      session.step = "photos";
+
+      await sendMessage(
+        TOKEN,
+        msg.chat.id,
+        texts[session.lang].ask_photos
+      );
+      return new Response("ok");
+    }
+
+    // PHOTOS
     if (session.step === "photos") {
       if (!msg.photo) {
         await sendMessage(
@@ -79,13 +109,15 @@ async function handler(req: Request) {
       const fileId = msg.photo[msg.photo.length - 1].file_id;
       session.data.photos.push(fileId);
 
-      // PREVIEW CARD (what user sees)
       const preview =
 `🚛 Truck Repair Order
 
 👤 Name: ${session.data.name}
 🚚 Truck: ${session.data.truck}
 🔧 Issue: ${session.data.issue}
+
+📅 Drop-off: ${session.data.dropDate}
+📅 Pickup: ${session.data.pickupDate}
 `;
 
       session.data.preview = preview;
@@ -121,10 +153,10 @@ async function handler(req: Request) {
       await sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name);
     }
 
-    // CONFIRM → SEND TO GROUP (TEXT + PHOTOS FIXED)
+    // CONFIRM → GROUP + PHOTOS
     if (data === "confirm") {
 
-      // 1. TEXT CARD
+      // TEXT CARD
       await sendMessage(
         TOKEN,
         GROUP,
@@ -133,15 +165,17 @@ async function handler(req: Request) {
 👤 Name: ${session.data.name}
 🚚 Truck: ${session.data.truck}
 🔧 Issue: ${session.data.issue}
+
+📅 Drop-off: ${session.data.dropDate}
+📅 Pickup: ${session.data.pickupDate}
 `
       );
 
-      // 2. PHOTOS
+      // PHOTOS
       if (session.data.photos.length > 0) {
         await sendMediaGroup(session.data.photos);
       }
 
-      // USER CONFIRMATION
       await sendMessage(
         TOKEN,
         cq.message.chat.id,
