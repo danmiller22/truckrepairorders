@@ -6,24 +6,35 @@ import { sendMessage } from "./utils.ts";
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
+async function sendMediaGroup(photos: string[]) {
+  const media = photos.map((id, i) => ({
+    type: "photo",
+    media: id,
+    caption: i === 0 ? "📸 Damage photos" : undefined
+  }));
+
+  await fetch(`https://api.telegram.org/bot${TOKEN}/sendMediaGroup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: GROUP,
+      media
+    })
+  });
+}
+
 async function handler(req: Request) {
   const update = await req.json();
 
-  // ---------------- TEXT MESSAGES ----------------
+  // ================= MESSAGE =================
   if (update.message) {
     const msg = update.message;
-    const userId = msg.from.id;
-    const session = getSession(userId);
+    const session = getSession(msg.from.id);
 
     // START
     if (msg.text === "/start") {
       session.step = "lang";
       await sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard());
-      return new Response("ok");
-    }
-
-    // LANGUAGE SELECT LOCK
-    if (session.step === "lang") {
       return new Response("ok");
     }
 
@@ -45,7 +56,7 @@ async function handler(req: Request) {
       return new Response("ok");
     }
 
-    // ISSUE (FIXED LOGIC)
+    // ISSUE
     if (session.step === "issue") {
       session.data.issue = msg.text;
       session.step = "photos";
@@ -54,13 +65,13 @@ async function handler(req: Request) {
       return new Response("ok");
     }
 
-    // PHOTOS STEP (FIXED - NO FREEZE ANYMORE)
+    // PHOTOS (FIXED)
     if (session.step === "photos") {
       if (!msg.photo) {
         await sendMessage(
           TOKEN,
           msg.chat.id,
-          "📸 Please send at least 1 photo of the issue / Отправьте фото поломки"
+          "📸 Send at least 1 photo / Отправьте фото"
         );
         return new Response("ok");
       }
@@ -68,12 +79,13 @@ async function handler(req: Request) {
       const fileId = msg.photo[msg.photo.length - 1].file_id;
       session.data.photos.push(fileId);
 
+      // PREVIEW CARD (what user sees)
       const preview =
 `🚛 Truck Repair Order
 
-👤 Name: ${session.data.name || ""}
-🚚 Truck: ${session.data.truck || ""}
-🔧 Issue: ${session.data.issue || ""}
+👤 Name: ${session.data.name}
+🚚 Truck: ${session.data.truck}
+🔧 Issue: ${session.data.issue}
 `;
 
       session.data.preview = preview;
@@ -90,32 +102,46 @@ async function handler(req: Request) {
     }
   }
 
-  // ---------------- CALLBACK BUTTONS ----------------
+  // ================= CALLBACK =================
   if (update.callback_query) {
     const cq = update.callback_query;
-    const userId = cq.from.id;
-    const session = getSession(userId);
+    const session = getSession(cq.from.id);
     const data = cq.data;
 
     // LANGUAGE
     if (data === "lang_ru") {
       session.lang = "ru";
       session.step = "name";
-
       await sendMessage(TOKEN, cq.message.chat.id, texts.ru.ask_name);
     }
 
     if (data === "lang_en") {
       session.lang = "en";
       session.step = "name";
-
       await sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name);
     }
 
-    // CONFIRM → SEND TO GROUP
+    // CONFIRM → SEND TO GROUP (TEXT + PHOTOS FIXED)
     if (data === "confirm") {
-      await sendMessage(TOKEN, GROUP, session.data.preview);
 
+      // 1. TEXT CARD
+      await sendMessage(
+        TOKEN,
+        GROUP,
+`🚛 Truck Repair Order
+
+👤 Name: ${session.data.name}
+🚚 Truck: ${session.data.truck}
+🔧 Issue: ${session.data.issue}
+`
+      );
+
+      // 2. PHOTOS
+      if (session.data.photos.length > 0) {
+        await sendMediaGroup(session.data.photos);
+      }
+
+      // USER CONFIRMATION
       await sendMessage(
         TOKEN,
         cq.message.chat.id,
@@ -131,13 +157,16 @@ async function handler(req: Request) {
       session.step = "name";
       session.data = { photos: [] };
 
-      await sendMessage(TOKEN, cq.message.chat.id, texts[session.lang].ask_name);
+      await sendMessage(
+        TOKEN,
+        cq.message.chat.id,
+        texts[session.lang].ask_name
+      );
     }
 
     // CANCEL
     if (data === "cancel") {
       session.step = "done";
-
       await sendMessage(TOKEN, cq.message.chat.id, "Cancelled");
     }
 
