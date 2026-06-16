@@ -26,84 +26,57 @@ async function sendMediaGroup(photos: string[]) {
 async function handler(req: Request) {
   const update = await req.json();
 
+  // ================= MESSAGE =================
   if (update.message) {
     const msg = update.message;
     const session = getSession(msg.from.id);
 
-    // 🔥 ALWAYS LOCK LANGUAGE
-    if (!session.lang) session.lang = "en";
-    const lang = session.lang;
+    const lang = session.lang || "en";
 
-    // START (ONLY LANGUAGE SELECTION)
+    // START
     if (msg.text === "/start") {
       session.step = "lang";
       await sendMessage(TOKEN, msg.chat.id, texts.en.start, langKeyboard());
       return new Response("ok");
     }
 
-    // LANGUAGE SELECT
-    if (msg.text === "lang_ru") {
-      session.lang = "ru";
-      session.step = "name";
-      await sendMessage(TOKEN, msg.chat.id, texts.ru.ask_name);
-      return new Response("ok");
-    }
-
-    if (msg.text === "lang_en") {
-      session.lang = "en";
-      session.step = "name";
-      await sendMessage(TOKEN, msg.chat.id, texts.en.ask_name);
-      return new Response("ok");
-    }
-
-    // NAME
+    // FLOW STEPS
     if (session.step === "name") {
       session.data.name = msg.text;
       session.step = "truck";
-
       await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_truck);
       return new Response("ok");
     }
 
-    // TRUCK
     if (session.step === "truck") {
       session.data.truck = msg.text;
       session.step = "issue";
-
       await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_issue);
       return new Response("ok");
     }
 
-    // ISSUE
     if (session.step === "issue") {
       session.data.issue = msg.text;
       session.step = "drop";
-
       await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_drop);
       return new Response("ok");
     }
 
-    // DROP
     if (session.step === "drop") {
       session.data.dropDate = msg.text;
       session.step = "pickup";
-
       await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_pickup);
       return new Response("ok");
     }
 
-    // PICKUP
     if (session.step === "pickup") {
       session.data.pickupDate = msg.text;
       session.step = "photos";
-
       await sendMessage(TOKEN, msg.chat.id, texts[lang].ask_photos);
       return new Response("ok");
     }
 
-    // PHOTOS
     if (session.step === "photos") {
-
       if (!msg.photo) {
         await sendMessage(TOKEN, msg.chat.id, texts[lang].need_photo);
         return new Response("ok");
@@ -136,15 +109,28 @@ async function handler(req: Request) {
     }
   }
 
-  // CALLBACKS
+  // ================= CALLBACK (FIXED!) =================
   if (update.callback_query) {
     const cq = update.callback_query;
     const session = getSession(cq.from.id);
 
-    if (!session.lang) session.lang = "en";
-    const lang = session.lang;
-
+    const lang = session.lang || "en";
     const data = cq.data;
+
+    // ✅ LANGUAGE FIX (MAIN BUG FIX)
+    if (data === "lang_ru") {
+      session.lang = "ru";
+      session.step = "name";
+
+      await sendMessage(TOKEN, cq.message.chat.id, texts.ru.ask_name);
+    }
+
+    if (data === "lang_en") {
+      session.lang = "en";
+      session.step = "name";
+
+      await sendMessage(TOKEN, cq.message.chat.id, texts.en.ask_name);
+    }
 
     // CONFIRM
     if (data === "confirm") {
@@ -177,8 +163,10 @@ async function handler(req: Request) {
       session.step = "done";
     }
 
-    // NEW REPORT 🔥 FIXED LANGUAGE BUG HERE
+    // NEW REPORT (FIXED)
     if (data === "new") {
+
+      const l = session.lang || "en";
 
       session.step = "name";
       session.data = {
@@ -187,11 +175,10 @@ async function handler(req: Request) {
         pickupDate: ""
       };
 
-      // ❗ IMPORTANT: always use session.lang
       await sendMessage(
         TOKEN,
         cq.message.chat.id,
-        texts[session.lang || "en"].ask_name
+        texts[l].ask_name
       );
     }
 
