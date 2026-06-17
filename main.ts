@@ -6,10 +6,7 @@ const mediaGroups = new Map<string, string[]>();
 
 function get(id: number) {
   if (!sessions.has(id)) {
-    sessions.set(id, {
-      step: 1,
-      data: { photos: [] }
-    });
+    sessions.set(id, { step: 1, data: { photos: [] } });
   }
   return sessions.get(id);
 }
@@ -32,7 +29,7 @@ async function sendMedia(photos: string[]) {
       media: photos.map((p, i) => ({
         type: "photo",
         media: p,
-        caption: i === 0 ? "Фотки поломок" : undefined
+        caption: i === 0 ? "Фото поломок" : undefined
       }))
     })
   });
@@ -41,15 +38,14 @@ async function sendMedia(photos: string[]) {
 function card(s: any) {
   return `🚛 Новый репорт
 
-имя - ${s.data.name || ""}
-трак - ${s.data.truck || ""}
-поломка - ${s.data.issue || ""}
+имя - ${s.data.name}
+трак - ${s.data.truck}
+поломка - ${s.data.issue}
 
-фотки поломок - ${s.data.photos?.length || 0}
+фотки поломок - ${s.data.photos.length}
 
-когда оставляет трак - ${s.data.drop || ""}
-когда забирает трак - ${s.data.pickup || ""}
-`;
+когда оставляет трак - ${s.data.drop}
+когда забирает трак - ${s.data.pickup}`;
 }
 
 Deno.serve(async (req) => {
@@ -67,7 +63,6 @@ Deno.serve(async (req) => {
 
   if (cb) {
     const s = get(cb.from.id);
-
     if (cb.data === "confirm") {
       await send(GROUP, card(s));
       await sendMedia(s.data.photos);
@@ -76,7 +71,6 @@ Deno.serve(async (req) => {
       });
       return new Response("ok");
     }
-
     if (cb.data === "new") {
       const s2 = get(cb.from.id);
       s2.step = 1;
@@ -87,53 +81,17 @@ Deno.serve(async (req) => {
   }
 
   if (!msg) return new Response("ok");
-
   const s = get(msg.from.id);
   const text = msg.text || "";
 
-  // STEP 1: name
-  if (s.step === 1) {
-    s.data.name = text;
-    s.step = 2;
-    await send(msg.chat.id, "Введите номер трака");
-    return new Response("ok");
-  }
+  if (s.step === 1) { s.data.name = text; s.step = 2; await send(msg.chat.id, "Введите номер трака"); return new Response("ok"); }
+  if (s.step === 2) { s.data.truck = text; s.step = 3; await send(msg.chat.id, "Опишите поломки"); return new Response("ok"); }
+  if (s.step === 3) { s.data.issue = text; s.step = 4; await send(msg.chat.id, "Когда оставляете трак?"); return new Response("ok"); }
+  if (s.step === 4) { s.data.drop = text; s.step = 5; await send(msg.chat.id, "Когда забираете трак?"); return new Response("ok"); }
+  if (s.step === 5) { s.data.pickup = text; s.step = 6; await send(msg.chat.id, "Отправьте фото (можно несколько, альбом поддерживается)"); return new Response("ok"); }
 
-  // STEP 2: truck
-  if (s.step === 2) {
-    s.data.truck = text;
-    s.step = 3;
-    await send(msg.chat.id, "Опишите поломки");
-    return new Response("ok");
-  }
-
-  // STEP 3: issue
-  if (s.step === 3) {
-    s.data.issue = text;
-    s.step = 4;
-    await send(msg.chat.id, "Когда оставляете трак?");
-    return new Response("ok");
-  }
-
-  // STEP 4: drop
-  if (s.step === 4) {
-    s.data.drop = text;
-    s.step = 5;
-    await send(msg.chat.id, "Когда забираете трак?");
-    return new Response("ok");
-  }
-
-  // STEP 5: pickup
-  if (s.step === 5) {
-    s.data.pickup = text;
-    s.step = 6;
-    await send(msg.chat.id, "Отправьте фото поломок (можно несколько сразу, альбом поддерживается)");
-    return new Response("ok");
-  }
-
-  // STEP 6: photos
+  // STEP 6: PHOTO
   if (s.step === 6) {
-    // 📸 обработка альбомов
     if (msg.media_group_id && msg.photo) {
       const arr = mediaGroups.get(msg.media_group_id) || [];
       arr.push(msg.photo.at(-1).file_id);
@@ -141,23 +99,18 @@ Deno.serve(async (req) => {
       return new Response("ok");
     }
 
-    // отдельное фото без альбома
     if (msg.photo && !msg.media_group_id) {
       s.data.photos.push(msg.photo.at(-1).file_id);
-      await send(msg.chat.id, card(s), {
-        inline_keyboard: [[{ text: "Подтвердить", callback_data: "confirm" }]]
-      });
+      await send(msg.chat.id, card(s), { inline_keyboard: [[{ text: "Подтвердить", callback_data: "confirm" }]] });
       return new Response("ok");
     }
 
-    // когда альбом закончился
+    // конец альбома
     if (msg.media_group_id && !msg.photo) {
       const photos = mediaGroups.get(msg.media_group_id) || [];
       s.data.photos.push(...photos);
       mediaGroups.delete(msg.media_group_id);
-      await send(msg.chat.id, card(s), {
-        inline_keyboard: [[{ text: "Подтвердить", callback_data: "confirm" }]]
-      });
+      await send(msg.chat.id, card(s), { inline_keyboard: [[{ text: "Подтвердить", callback_data: "confirm" }]] });
       return new Response("ok");
     }
   }
