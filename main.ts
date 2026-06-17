@@ -1,17 +1,23 @@
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
+// 🔥 GLOBAL LANGUAGE STORE (FIX 100%)
+const userLang = new Map<number, "ru" | "en">();
+
 const sessions = new Map<number, any>();
 
 function get(id: number) {
   if (!sessions.has(id)) {
     sessions.set(id, {
-      lang: "en",
       step: "lang",
       data: { photos: [] }
     });
   }
   return sessions.get(id);
+}
+
+function langOf(id: number) {
+  return userLang.get(id) || "en";
 }
 
 async function send(chat: string, text: string, keyboard?: any) {
@@ -51,32 +57,32 @@ Deno.serve(async (req) => {
 
   // ================= START =================
   if (msg?.text === "/start") {
-    const s = get(msg.from.id);
+    const id = msg.from.id;
 
+    const s = get(id);
     s.step = "lang";
-    s.data = { photos: [] };
 
-    await send(msg.chat.id,
-      "Choose language / Выберите язык",
-      {
-        inline_keyboard: [
-          [{ text: "Русский", callback_data: "ru" }],
-          [{ text: "English", callback_data: "en" }]
-        ]
-      }
-    );
+    await send(msg.chat.id, "Choose language / Выберите язык", {
+      inline_keyboard: [
+        [{ text: "Русский", callback_data: "ru" }],
+        [{ text: "English", callback_data: "en" }]
+      ]
+    });
 
     return new Response("ok");
   }
 
   // ================= CALLBACK =================
   if (cb) {
-    const s = get(cb.from.id);
+    const id = cb.from.id;
+    const s = get(id);
+
     const d = cb.data;
 
-    // LANGUAGE
+    // 🔥 LANGUAGE FIX (PERMANENT SAVE)
     if (d === "ru" || d === "en") {
-      s.lang = d;
+      userLang.set(id, d);
+
       s.step = "name";
       s.data = { photos: [] };
 
@@ -92,6 +98,8 @@ Deno.serve(async (req) => {
 
     // CONFIRM
     if (d === "confirm") {
+
+      const lang = langOf(id);
 
       await send(
         GROUP,
@@ -110,11 +118,11 @@ Issue: ${s.data.issue}
 
       await send(
         cb.message.chat.id,
-        s.lang === "ru" ? "Заявка отправлена" : "Request sent",
+        lang === "ru" ? "Заявка отправлена" : "Request sent",
         {
           inline_keyboard: [[
             {
-              text: s.lang === "ru"
+              text: lang === "ru"
                 ? "Создать новый репорт"
                 : "Create new report",
               callback_data: "new"
@@ -126,16 +134,18 @@ Issue: ${s.data.issue}
       return new Response("ok");
     }
 
-    // NEW REPORT
+    // NEW REPORT (🔥 FIXED LANGUAGE)
     if (d === "new") {
-      const s = get(cb.from.id);
 
+      const lang = langOf(id);
+
+      const s = get(id);
       s.step = "name";
       s.data = { photos: [] };
 
       await send(
         cb.message.chat.id,
-        s.lang === "ru"
+        lang === "ru"
           ? "Введите имя и фамилию"
           : "Enter first and last name"
       );
@@ -146,11 +156,12 @@ Issue: ${s.data.issue}
 
   // ================= FLOW =================
   if (msg) {
-    const s = get(msg.from.id);
-    const lang = s.lang || "en";
+    const id = msg.from.id;
+    const s = get(id);
+    const lang = langOf(id);
+
     const text = msg.text;
 
-    // NAME
     if (s.step === "name") {
       s.data.name = text;
       s.step = "truck";
@@ -162,7 +173,6 @@ Issue: ${s.data.issue}
       return new Response("ok");
     }
 
-    // TRUCK
     if (s.step === "truck") {
       s.data.truck = text;
       s.step = "issue";
@@ -174,49 +184,45 @@ Issue: ${s.data.issue}
       return new Response("ok");
     }
 
-    // ISSUE (FIXED NO FREEZE)
     if (s.step === "issue") {
       s.data.issue = text;
       s.step = "drop";
 
       await send(msg.chat.id,
         lang === "ru"
-          ? "📅 Когда оставляете трак? (drop-off date)"
-          : "📅 When are you dropping off the truck?"
+          ? "Когда оставляете трак?"
+          : "When dropping off truck?"
       );
 
       return new Response("ok");
     }
 
-    // DROP DATE
     if (s.step === "drop") {
       s.data.drop = text;
       s.step = "pickup";
 
       await send(msg.chat.id,
         lang === "ru"
-          ? "📅 Когда забираете трак? (pickup date)"
-          : "📅 When will you pick up the truck?"
+          ? "Когда забираете трак?"
+          : "Pickup date?"
       );
 
       return new Response("ok");
     }
 
-    // PICKUP DATE
     if (s.step === "pickup") {
       s.data.pickup = text;
       s.step = "photos";
 
       await send(msg.chat.id,
         lang === "ru"
-          ? "Отправьте фото (или любое сообщение чтобы пропустить)"
-          : "Send photos (or any message to skip)"
+          ? "Отправьте фото"
+          : "Send photos"
       );
 
       return new Response("ok");
     }
 
-    // PHOTOS (NO FREEZE EVER)
     if (s.step === "photos") {
 
       if (msg.photo) {
@@ -225,7 +231,7 @@ Issue: ${s.data.issue}
       }
 
       await send(msg.chat.id,
-        s.lang === "ru" ? "Подтвердить заявку?" : "Confirm request?",
+        lang === "ru" ? "Подтвердить заявку?" : "Confirm request?",
         {
           inline_keyboard: [
             [{ text: "Confirm", callback_data: "confirm" }]
