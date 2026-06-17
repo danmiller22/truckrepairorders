@@ -6,7 +6,7 @@ const sessions = new Map<number, any>();
 function get(id: number) {
   if (!sessions.has(id)) {
     sessions.set(id, {
-      step: "start",
+      step: 0,
       data: { photos: [] }
     });
   }
@@ -17,7 +17,11 @@ async function send(chat: string, text: string, keyboard?: any) {
   await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chat, text, reply_markup: keyboard })
+    body: JSON.stringify({
+      chat_id: chat,
+      text,
+      reply_markup: keyboard
+    })
   });
 }
 
@@ -41,14 +45,14 @@ async function sendMedia(photos: string[]) {
 function card(s: any) {
   return `🚛 Новый репорт
 
-имя - ${s.data.name || ""}
-трак - ${s.data.truck || ""}
-поломка - ${s.data.issue || ""}
+имя - ${s.data.name}
+трак - ${s.data.truck}
+поломка - ${s.data.issue}
 
 фотки - ${s.data.photos.length}
 
-когда оставляет - ${s.data.drop || ""}
-когда забирает - ${s.data.pickup || ""}
+когда оставляет - ${s.data.drop}
+когда забирает - ${s.data.pickup}
 `;
 }
 
@@ -62,7 +66,7 @@ Deno.serve(async (req) => {
   if (msg?.text === "/start") {
     const s = get(msg.from.id);
 
-    s.step = "name";        // 🔥 FIX: старт ВСЕГДА name
+    s.step = 1;
     s.data = { photos: [] };
 
     await send(msg.chat.id, "Введите имя и фамилию");
@@ -72,11 +76,9 @@ Deno.serve(async (req) => {
   // ================= CALLBACK =================
   if (cb) {
     const s = get(cb.from.id);
-    const d = cb.data;
 
-    if (d === "confirm") {
+    if (cb.data === "confirm") {
       await send(GROUP, card(s));
-
       await sendMedia(s.data.photos);
 
       await send(cb.message.chat.id, "Заявка отправлена", {
@@ -88,11 +90,9 @@ Deno.serve(async (req) => {
       return new Response("ok");
     }
 
-    if (d === "new") {
-      const s2 = get(cb.from.id);
-
-      s2.step = "name";
-      s2.data = { photos: [] };
+    if (cb.data === "new") {
+      s.step = 1;
+      s.data = { photos: [] };
 
       await send(cb.message.chat.id, "Введите имя и фамилию");
       return new Response("ok");
@@ -104,62 +104,68 @@ Deno.serve(async (req) => {
     const s = get(msg.from.id);
     const text = msg.text;
 
-    // 🔥 FIX: safety guard (НЕ даём прыгать шагам)
-    if (!s.step) s.step = "name";
-
-    if (s.step === "name") {
+    // STEP 1 NAME
+    if (s.step === 1) {
       s.data.name = text;
-      s.step = "truck";
+      s.step = 2;
 
       await send(msg.chat.id, "Введите номер трака");
-      return;
+      return new Response("ok");
     }
 
-    if (s.step === "truck") {
+    // STEP 2 TRUCK
+    if (s.step === 2) {
       s.data.truck = text;
-      s.step = "issue";
+      s.step = 3;
 
       await send(msg.chat.id, "Опишите поломки");
-      return;
+      return new Response("ok");
     }
 
-    if (s.step === "issue") {
+    // STEP 3 ISSUE
+    if (s.step === 3) {
       s.data.issue = text;
-      s.step = "drop";
+      s.step = 4;
 
       await send(msg.chat.id, "Когда оставляете трак?");
-      return;
+      return new Response("ok");
     }
 
-    if (s.step === "drop") {
+    // STEP 4 DROP
+    if (s.step === 4) {
       s.data.drop = text;
-      s.step = "pickup";
+      s.step = 5;
 
       await send(msg.chat.id, "Когда забираете трак?");
-      return;
+      return new Response("ok");
     }
 
-    if (s.step === "pickup") {
+    // STEP 5 PICKUP
+    if (s.step === 5) {
       s.data.pickup = text;
-      s.step = "photos";
+      s.step = 6;
 
-      await send(msg.chat.id, "Отправьте фото");
-      return;
+      await send(msg.chat.id, "Отправьте фото (можно несколько)");
+      return new Response("ok");
     }
 
-    if (s.step === "photos") {
+    // STEP 6 PHOTOS
+    if (s.step === 6) {
+
       if (msg.photo) {
         const file = msg.photo.at(-1).file_id;
         s.data.photos.push(file);
+        return new Response("ok");
       }
 
+      // ЛЮБОЕ СООБЩЕНИЕ = ПОКАЗ КАРТОЧКИ
       await send(msg.chat.id, card(s), {
         inline_keyboard: [[
           { text: "Подтвердить", callback_data: "confirm" }
         ]]
       });
 
-      return;
+      return new Response("ok");
     }
   }
 
