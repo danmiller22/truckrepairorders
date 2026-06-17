@@ -6,7 +6,7 @@ const sessions = new Map<number, any>();
 function get(id: number) {
   if (!sessions.has(id)) {
     sessions.set(id, {
-      step: "name",
+      step: "start",
       data: { photos: [] }
     });
   }
@@ -17,11 +17,7 @@ async function send(chat: string, text: string, keyboard?: any) {
   await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chat,
-      text,
-      reply_markup: keyboard
-    })
+    body: JSON.stringify({ chat_id: chat, text, reply_markup: keyboard })
   });
 }
 
@@ -66,7 +62,7 @@ Deno.serve(async (req) => {
   if (msg?.text === "/start") {
     const s = get(msg.from.id);
 
-    s.step = "name";
+    s.step = "name";        // 🔥 FIX: старт ВСЕГДА name
     s.data = { photos: [] };
 
     await send(msg.chat.id, "Введите имя и фамилию");
@@ -107,6 +103,9 @@ Deno.serve(async (req) => {
   if (msg) {
     const s = get(msg.from.id);
     const text = msg.text;
+
+    // 🔥 FIX: safety guard (НЕ даём прыгать шагам)
+    if (!s.step) s.step = "name";
 
     if (s.step === "name") {
       s.data.name = text;
