@@ -1,21 +1,25 @@
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
-// 🔥 ПЕРСИСТЕНТНАЯ ПАМЯТЬ
-const kv = await Deno.openKv();
-
 const albumBuffer = new Map<string, {
   items: { type: "photo" | "video"; file_id: string }[],
   timeout: number
 }>();
 
+// 🔥 KV создаём лениво (ВАЖНО ДЛЯ DEPLOY)
+async function kv() {
+  return await Deno.openKv();
+}
+
 async function getSession(id: number) {
-  const res = await kv.get(["session", id]);
+  const db = await kv();
+  const res = await db.get(["session", id]);
   return res.value || { step: 1, data: { media: [] } };
 }
 
 async function saveSession(id: number, value: any) {
-  await kv.set(["session", id], value);
+  const db = await kv();
+  await db.set(["session", id], value);
 }
 
 async function send(chat: string, text: string, keyboard?: any) {
@@ -60,6 +64,7 @@ Deno.serve(async (req) => {
   const msg = u.message;
   const cb = u.callback_query;
 
+  // ================= CALLBACK =================
   if (cb) {
     const s = await getSession(cb.from.id);
 
@@ -136,6 +141,7 @@ Deno.serve(async (req) => {
     return new Response("ok");
   }
 
+  // ================= MEDIA =================
   if (s.step === 5) {
     if (!msg.photo && !msg.video) return new Response("ok");
 
@@ -155,12 +161,12 @@ Deno.serve(async (req) => {
     clearTimeout(buf.timeout);
 
     buf.timeout = setTimeout(async () => {
-      const updated = await getSession(msg.from.id);
-      updated.data.media.push(...buf.items);
+      const fresh = await getSession(msg.from.id);
+      fresh.data.media.push(...buf.items);
 
       albumBuffer.delete(groupId);
 
-      await send(msg.chat.id, card(updated), {
+      await send(msg.chat.id, card(fresh), {
         inline_keyboard: [[
           { text: "Подтвердить", callback_data: "confirm" }
         ]]
