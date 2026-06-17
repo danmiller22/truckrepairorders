@@ -36,23 +36,23 @@ async function sendMedia(photos: string[]) {
       media: photos.map((p, i) => ({
         type: "photo",
         media: p,
-        caption: i === 0 ? "Фотки поломок" : undefined
+        caption: i === 0 ? "Фото поломок" : undefined
       }))
     })
   });
 }
 
-function buildCard(s: any) {
+function card(s: any) {
   return `🚛 Новый репорт
 
 имя - ${s.data.name || ""}
 трак - ${s.data.truck || ""}
 поломка - ${s.data.issue || ""}
 
-фотки поломок - ${s.data.photos?.length || 0}
+фотки - ${s.data.photos.length}
 
-когда оставляет трак - ${s.data.drop || ""}
-когда забирает трак - ${s.data.pickup || ""}
+когда оставляет - ${s.data.drop || ""}
+когда забирает - ${s.data.pickup || ""}
 `;
 }
 
@@ -65,6 +65,7 @@ Deno.serve(async (req) => {
   // ================= START =================
   if (msg?.text === "/start") {
     const s = get(msg.from.id);
+
     s.step = "name";
     s.data = { photos: [] };
 
@@ -77,10 +78,10 @@ Deno.serve(async (req) => {
     const s = get(cb.from.id);
     const d = cb.data;
 
-    // CONFIRM
     if (d === "confirm") {
+      await send(GROUP, card(s));
 
-      await send(GROUP, buildCard(s));
+      await sendMedia(s.data.photos);
 
       await send(cb.message.chat.id, "Заявка отправлена", {
         inline_keyboard: [[
@@ -91,9 +92,9 @@ Deno.serve(async (req) => {
       return new Response("ok");
     }
 
-    // NEW REPORT
     if (d === "new") {
       const s2 = get(cb.from.id);
+
       s2.step = "name";
       s2.data = { photos: [] };
 
@@ -143,21 +144,17 @@ Deno.serve(async (req) => {
       s.data.pickup = text;
       s.step = "photos";
 
-      await send(msg.chat.id, "Отправьте фото поломок");
+      await send(msg.chat.id, "Отправьте фото");
       return;
     }
 
-    // ================= PHOTOS FIX =================
     if (s.step === "photos") {
-
       if (msg.photo) {
         const file = msg.photo.at(-1).file_id;
         s.data.photos.push(file);
-        return;
       }
 
-      // ❗ СРАЗУ ПОКАЗЫВАЕМ КАРТОЧКУ + CONFIRM
-      await send(msg.chat.id, buildCard(s), {
+      await send(msg.chat.id, card(s), {
         inline_keyboard: [[
           { text: "Подтвердить", callback_data: "confirm" }
         ]]
