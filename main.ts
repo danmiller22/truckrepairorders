@@ -147,18 +147,21 @@ Deno.serve(async (req) => {
       s.data.pickup = text;
       s.step = "photos";
 
-      await send(msg.chat.id, "Отправьте фото");
+      await send(msg.chat.id, "Отправьте фото (можно отправить несколько подряд)");
       return new Response("ok");
     }
 
+    // ================= PHOTOS (СОБИРАЕМ ВСЕ ФОТО) =================
     if (s.step === "photos") {
+      // собираем фото в массив
       if (msg.photo) {
         const file = msg.photo.at(-1).file_id;
         s.data.photos.push(file);
       }
 
+      // показываем кнопку Подтвердить только один раз
       await send(msg.chat.id,
-        "Подтвердить заявку?",
+        "Все фото добавлены? Подтвердите заявку",
         { inline_keyboard: [[{ text: "Подтвердить", callback_data: "confirm" }]] }
       );
 
