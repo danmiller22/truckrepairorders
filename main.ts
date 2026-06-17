@@ -51,14 +51,14 @@ async function sendMedia(photos: string[]) {
 function card(s: any) {
   return `🚛 Новый репорт
 
-Имя и фамилия водителя - ${s.data.name || ""}
-Трак номер - ${s.data.truck || ""}
-Описание поломки - ${s.data.issue || ""}
+имя - ${s.data.name || ""}
+трак - ${s.data.truck || ""}
+поломка - ${s.data.issue || ""}
 
-Фотки поломки - ${s.data.photos.length}
+фотки - ${s.data.photos.length}
 
-Когда оставляет - ${s.data.drop || ""}
-Когда забирает - ${s.data.pickup || ""}
+когда оставляет - ${s.data.drop || ""}
+когда забирает - ${s.data.pickup || ""}
 `;
 }
 
@@ -158,7 +158,7 @@ Deno.serve(async (req) => {
     s.data.pickup = text;
     s.step = 6;
 
-    await send(msg.chat.id, "Отправьте фото поломок");
+    await send(msg.chat.id, "Отправьте фото (можно альбомом)");
     return new Response("ok");
   }
 
