@@ -142,7 +142,7 @@ Deno.serve(async (req) => {
   if (s.step === 3) {
     s.data.issue = text;
     s.step = 4;
-    await send(msg.chat.id, "Когда оставляете трак?)");
+    await send(msg.chat.id, "Когда оставляете трак?");
     return new Response("ok");
   }
 
