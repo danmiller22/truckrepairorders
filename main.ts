@@ -1,13 +1,7 @@
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
-// ===== MEMORY (in-memory safe for deploy warm instances) =====
 const sessions = new Map<number, any>();
-
-const albumBuffer = new Map<string, {
-  items: { type: "photo" | "video"; file_id: string }[],
-  timeout: number
-}>();
 
 function get(id: number) {
   if (!sessions.has(id)) {
@@ -57,24 +51,7 @@ function card(s: any) {
 
 файлы - ${s.data.media.length}
 
-дата сдачи - ${s.data.drop || ""}`;
-}
-
-// ===== flush album =====
-function flush(groupId: string, s: any, chatId: string) {
-  const buf = albumBuffer.get(groupId);
-  if (!buf) return;
-
-  clearTimeout(buf.timeout);
-  albumBuffer.delete(groupId);
-
-  s.data.media.push(...buf.items);
-
-  send(chatId, card(s), {
-    inline_keyboard: [[
-      { text: "Подтвердить", callback_data: "confirm" }
-    ]]
-  });
+когда оставляет трак - ${s.data.drop || ""}`;
 }
 
 Deno.serve(async (req) => {
@@ -114,7 +91,7 @@ Deno.serve(async (req) => {
 
   if (!msg) return new Response("ok");
 
-  // ❗ IGNORE GROUPS (ВАЖНО)
+  // ❗ ВАЖНО: только личка
   if (msg.chat.type !== "private") return new Response("ok");
 
   const s = get(msg.from.id);
@@ -129,7 +106,7 @@ Deno.serve(async (req) => {
     return new Response("ok");
   }
 
-  // ================= STEPS =================
+  // ================= FLOW =================
   if (s.step === 1) {
     s.data.name = text;
     s.step = 2;
@@ -158,29 +135,23 @@ Deno.serve(async (req) => {
     return new Response("ok");
   }
 
-  // ================= MEDIA =================
+  // ================= MEDIA (FIXED NO BUFFER) =================
   if (s.step === 5) {
 
     if (!msg.photo && !msg.video) return new Response("ok");
-
-    const groupId = msg.media_group_id || `single_${msg.from.id}`;
 
     const item = msg.photo
       ? { type: "photo", file_id: msg.photo.at(-1).file_id }
       : { type: "video", file_id: msg.video.file_id };
 
-    if (!albumBuffer.has(groupId)) {
-      albumBuffer.set(groupId, { items: [], timeout: 0 });
-    }
+    s.data.media.push(item);
 
-    const buf = albumBuffer.get(groupId)!;
-    buf.items.push(item);
-
-    clearTimeout(buf.timeout);
-
-    buf.timeout = setTimeout(() => {
-      flush(groupId, s, msg.chat.id);
-    }, 1200);
+    // ❗ сразу показываем confirm (без таймеров = НЕ ЛОМАЕТ DEPLOY)
+    await send(msg.chat.id, card(s), {
+      inline_keyboard: [[
+        { text: "Подтвердить", callback_data: "confirm" }
+      ]]
+    });
 
     return new Response("ok");
   }
