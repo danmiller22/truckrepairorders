@@ -3,19 +3,23 @@ const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
 const sessions = new Map<number, any>();
 
-const albumBuffer = new Map<string, {
+const mediaBuffer = new Map<string, {
   items: { type: "photo" | "video"; file_id: string }[],
   timeout: number
 }>();
 
 function get(id: number) {
-  if (!sessions.has(id)) {
-    sessions.set(id, {
+  let s = sessions.get(id);
+
+  if (!s) {
+    s = {
       step: 1,
       data: { media: [] }
-    });
+    };
+    sessions.set(id, s);
   }
-  return sessions.get(id);
+
+  return s;
 }
 
 async function send(chat: string, text: string, keyboard?: any) {
@@ -56,13 +60,13 @@ function card(s: any) {
 }
 
 function flush(groupId: string, s: any, chatId: string) {
-  const album = albumBuffer.get(groupId);
-  if (!album) return;
+  const buf = mediaBuffer.get(groupId);
+  if (!buf) return;
 
-  clearTimeout(album.timeout);
-  albumBuffer.delete(groupId);
+  clearTimeout(buf.timeout);
+  mediaBuffer.delete(groupId);
 
-  s.data.media.push(...album.items);
+  s.data.media.push(...buf.items);
 
   send(chatId, card(s), {
     inline_keyboard: [[
@@ -76,6 +80,7 @@ Deno.serve(async (req) => {
   const msg = u.message;
   const cb = u.callback_query;
 
+  // ================= CALLBACK =================
   if (cb) {
     const s = get(cb.from.id);
 
@@ -104,18 +109,22 @@ Deno.serve(async (req) => {
 
   if (!msg) return new Response("ok");
 
+  // ❗ игнор группы полностью
   if (msg.chat.type !== "private") return new Response("ok");
 
   const s = get(msg.from.id);
   const text = msg.text || "";
 
+  // ================= START =================
   if (text === "/start") {
     s.step = 1;
     s.data = { media: [] };
+
     await send(msg.chat.id, "Введите имя и фамилию");
     return new Response("ok");
   }
 
+  // ================= STEPS =================
   if (s.step === 1) {
     s.data.name = text;
     s.step = 2;
@@ -144,7 +153,7 @@ Deno.serve(async (req) => {
     return new Response("ok");
   }
 
-  // ================= MEDIA HANDLER =================
+  // ================= MEDIA FIX =================
   if (s.step === 5) {
 
     const groupId = msg.media_group_id || `single_${msg.from.id}`;
@@ -161,16 +170,17 @@ Deno.serve(async (req) => {
 
     if (!item) return new Response("ok");
 
-    if (!albumBuffer.has(groupId)) {
-      albumBuffer.set(groupId, { items: [], timeout: 0 });
+    if (!mediaBuffer.has(groupId)) {
+      mediaBuffer.set(groupId, { items: [], timeout: 0 });
     }
 
-    const album = albumBuffer.get(groupId)!;
-    album.items.push(item);
+    const buf = mediaBuffer.get(groupId)!;
+    buf.items.push(item);
 
-    clearTimeout(album.timeout);
+    clearTimeout(buf.timeout);
 
-    album.timeout = setTimeout(() => {
+    // ⏱ ждём окончания альбома
+    buf.timeout = setTimeout(() => {
       flush(groupId, s, msg.chat.id);
     }, 1200);
 
