@@ -142,14 +142,14 @@ Deno.serve(async (req) => {
   if (s.step === 3) {
     s.data.issue = text;
     s.step = 4;
-    await send(msg.chat.id, "Когда оставляете трак?");
+    await send(msg.chat.id, "Дата сдачи (когда оставляет трак)");
     return new Response("ok");
   }
 
   if (s.step === 4) {
     s.data.drop = text;
     s.step = 5;
-    await send(msg.chat.id, "Отправьте фото или видео");
+    await send(msg.chat.id, "Отправьте фото или видео поломки");
     return new Response("ok");
   }
 
