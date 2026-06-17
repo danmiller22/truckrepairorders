@@ -18,11 +18,17 @@ async function send(chat: string, text: string, keyboard?: any) {
   await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chat, text, reply_markup: keyboard })
+    body: JSON.stringify({
+      chat_id: chat,
+      text,
+      reply_markup: keyboard
+    })
   });
 }
 
 async function sendMedia(photos: string[]) {
+  if (!photos.length) return;
+
   await fetch(`https://api.telegram.org/bot${TOKEN}/sendMediaGroup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -46,14 +52,19 @@ Deno.serve(async (req) => {
   // ================= START =================
   if (msg?.text === "/start") {
     const s = get(msg.from.id);
-    s.step = "lang";
 
-    await send(msg.chat.id, "Choose language / Выберите язык", {
-      inline_keyboard: [
-        [{ text: "Русский", callback_data: "ru" }],
-        [{ text: "English", callback_data: "en" }]
-      ]
-    });
+    s.step = "lang";
+    s.data = { photos: [] };
+
+    await send(msg.chat.id,
+      "Choose language / Выберите язык",
+      {
+        inline_keyboard: [
+          [{ text: "Русский", callback_data: "ru" }],
+          [{ text: "English", callback_data: "en" }]
+        ]
+      }
+    );
 
     return new Response("ok");
   }
@@ -61,8 +72,6 @@ Deno.serve(async (req) => {
   // ================= CALLBACK =================
   if (cb) {
     const s = get(cb.from.id);
-    const lang = s.lang;
-
     const d = cb.data;
 
     // LANGUAGE
@@ -73,7 +82,9 @@ Deno.serve(async (req) => {
 
       await send(
         cb.message.chat.id,
-        d === "ru" ? "Введите имя и фамилию" : "Enter name and last name"
+        d === "ru"
+          ? "Введите имя и фамилию"
+          : "Enter first and last name"
       );
 
       return new Response("ok");
@@ -81,6 +92,7 @@ Deno.serve(async (req) => {
 
     // CONFIRM
     if (d === "confirm") {
+
       await send(
         GROUP,
 `🚛 Truck Repair Order
@@ -88,12 +100,13 @@ Deno.serve(async (req) => {
 Name: ${s.data.name}
 Truck: ${s.data.truck}
 Issue: ${s.data.issue}
+
+📅 Drop-off: ${s.data.drop}
+📅 Pickup: ${s.data.pickup}
 `
       );
 
-      if (s.data.photos?.length) {
-        await sendMedia(s.data.photos);
-      }
+      await sendMedia(s.data.photos);
 
       await send(
         cb.message.chat.id,
@@ -116,6 +129,7 @@ Issue: ${s.data.issue}
     // NEW REPORT
     if (d === "new") {
       const s = get(cb.from.id);
+
       s.step = "name";
       s.data = { photos: [] };
 
@@ -123,7 +137,7 @@ Issue: ${s.data.issue}
         cb.message.chat.id,
         s.lang === "ru"
           ? "Введите имя и фамилию"
-          : "Enter name and last name"
+          : "Enter first and last name"
       );
 
       return new Response("ok");
@@ -133,13 +147,10 @@ Issue: ${s.data.issue}
   // ================= FLOW =================
   if (msg) {
     const s = get(msg.from.id);
-    const lang = s.lang;
-
-    // SAFE STEP INIT (FIX CRASH)
-    if (!s.step) s.step = "name";
-
+    const lang = s.lang || "en";
     const text = msg.text;
 
+    // NAME
     if (s.step === "name") {
       s.data.name = text;
       s.step = "truck";
@@ -151,6 +162,7 @@ Issue: ${s.data.issue}
       return new Response("ok");
     }
 
+    // TRUCK
     if (s.step === "truck") {
       s.data.truck = text;
       s.step = "issue";
@@ -162,32 +174,58 @@ Issue: ${s.data.issue}
       return new Response("ok");
     }
 
+    // ISSUE (FIXED NO FREEZE)
     if (s.step === "issue") {
       s.data.issue = text;
-      s.step = "photos";
+      s.step = "drop";
 
       await send(msg.chat.id,
         lang === "ru"
-          ? "Отправьте фото"
-          : "Send photos"
+          ? "📅 Когда оставляете трак? (drop-off date)"
+          : "📅 When are you dropping off the truck?"
       );
 
       return new Response("ok");
     }
 
-    // ================= FIXED PHOTOS (NO DEAD END) =================
+    // DROP DATE
+    if (s.step === "drop") {
+      s.data.drop = text;
+      s.step = "pickup";
+
+      await send(msg.chat.id,
+        lang === "ru"
+          ? "📅 Когда забираете трак? (pickup date)"
+          : "📅 When will you pick up the truck?"
+      );
+
+      return new Response("ok");
+    }
+
+    // PICKUP DATE
+    if (s.step === "pickup") {
+      s.data.pickup = text;
+      s.step = "photos";
+
+      await send(msg.chat.id,
+        lang === "ru"
+          ? "Отправьте фото (или любое сообщение чтобы пропустить)"
+          : "Send photos (or any message to skip)"
+      );
+
+      return new Response("ok");
+    }
+
+    // PHOTOS (NO FREEZE EVER)
     if (s.step === "photos") {
 
-      // photo
       if (msg.photo) {
         const file = msg.photo.at(-1).file_id;
         s.data.photos.push(file);
       }
 
-      // ANY message continues flow (NO DEAD END BUG)
-      await send(
-        msg.chat.id,
-        lang === "ru" ? "Подтвердить заявку?" : "Confirm request?",
+      await send(msg.chat.id,
+        s.lang === "ru" ? "Подтвердить заявку?" : "Confirm request?",
         {
           inline_keyboard: [
             [{ text: "Confirm", callback_data: "confirm" }]
