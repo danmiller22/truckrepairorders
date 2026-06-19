@@ -5,16 +5,20 @@ const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 const sessions = new Map<number, any>();
 let kvStorePromise: Promise<any | null> | undefined;
 
+function emptyData(name = "") {
+  return {
+    name,
+    truck: "",
+    issue: "",
+    drop: "",
+    media: []
+  };
+}
+
 function newSession() {
   return {
     step: 1,
-    data: {
-      name: "",
-      truck: "",
-      issue: "",
-      drop: "",
-      media: []
-    }
+    data: emptyData()
   };
 }
 
@@ -99,6 +103,18 @@ function card(s: any) {
 когда оставляет трак - ${s.data.drop || "—"}`;
 }
 
+async function sendCurrentPrompt(chat: string, s: any) {
+  const prompts: Record<number, string> = {
+    1: "Введите имя и фамилию",
+    2: "Введите номер трака",
+    3: "Опишите поломки",
+    4: "Когда оставляет трак?",
+    5: "Отправьте фото или видео поломки"
+  };
+
+  await send(chat, prompts[s.step] || prompts[1]);
+}
+
 // ===== SERVER =====
 Deno.serve(async (req) => {
   const u = await req.json();
@@ -113,8 +129,9 @@ Deno.serve(async (req) => {
       await send(GROUP, card(s));
       await sendMedia(s.data.media);
 
-      s.step = 1;
-      s.data = { name: "", truck: "", issue: "", drop: "", media: [] };
+      // Keep the driver's name for the next report, but clear report-specific data.
+      s.step = 2;
+      s.data = emptyData(s.data.name);
       await saveSession(cb.from.id, s);
 
       await send(cb.message.chat.id, "Заявка отправлена", {
@@ -127,12 +144,11 @@ Deno.serve(async (req) => {
     }
 
     if (cb.data === "new") {
-      const s2 = await getSession(cb.from.id);
-      s2.step = 1;
-      s2.data = { name: "", truck: "", issue: "", drop: "", media: [] };
-      await saveSession(cb.from.id, s2);
+      s.step = s.data.name ? 2 : 1;
+      s.data = emptyData(s.data.name);
+      await saveSession(cb.from.id, s);
 
-      await send(cb.message.chat.id, "Введите имя и фамилию");
+      await sendCurrentPrompt(cb.message.chat.id, s);
       return new Response("ok");
     }
   }
@@ -147,14 +163,21 @@ Deno.serve(async (req) => {
 
   // ================= FLOW =================
   if (text === "/start") {
-    s.step = 1;
-    s.data = { name: "", truck: "", issue: "", drop: "", media: [] };
-    await saveSession(msg.from.id, s);
-    await send(msg.chat.id, "Введите имя и фамилию");
+    // Resume the persisted draft instead of erasing fields already entered.
+    if (!s.data.name && s.step !== 1) {
+      s.step = 1;
+      await saveSession(msg.from.id, s);
+    }
+    await sendCurrentPrompt(msg.chat.id, s);
     return new Response("ok");
   }
 
   if (s.step === 1) {
+    if (!text) {
+      await send(msg.chat.id, "Введите имя и фамилию текстом");
+      return new Response("ok");
+    }
+
     s.data.name = text;
     s.step = 2;
     await saveSession(msg.from.id, s);
@@ -163,6 +186,11 @@ Deno.serve(async (req) => {
   }
 
   if (s.step === 2) {
+    if (!text) {
+      await send(msg.chat.id, "Введите номер трака текстом");
+      return new Response("ok");
+    }
+
     s.data.truck = text;
     s.step = 3;
     await saveSession(msg.from.id, s);
@@ -171,6 +199,11 @@ Deno.serve(async (req) => {
   }
 
   if (s.step === 3) {
+    if (!text) {
+      await send(msg.chat.id, "Опишите поломки текстом");
+      return new Response("ok");
+    }
+
     s.data.issue = text;
     s.step = 4;
     await saveSession(msg.from.id, s);
@@ -179,6 +212,11 @@ Deno.serve(async (req) => {
   }
 
   if (s.step === 4) {
+    if (!text) {
+      await send(msg.chat.id, "Напишите, когда оставите трак");
+      return new Response("ok");
+    }
+
     s.data.drop = text;
     s.step = 5;
     await saveSession(msg.from.id, s);
