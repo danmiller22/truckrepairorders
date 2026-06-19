@@ -3,25 +3,57 @@ const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
 
 // ===== STATE =====
 const sessions = new Map<number, any>();
+let kvStorePromise: Promise<any | null> | undefined;
 
-function getSession(id: number) {
-  if (!sessions.has(id)) {
-    sessions.set(id, {
-      step: 1,
-      data: {
-        name: "",
-        truck: "",
-        issue: "",
-        drop: "",
-        media: []
-      }
-    });
-  }
-  return sessions.get(id);
+function newSession() {
+  return {
+    step: 1,
+    data: {
+      name: "",
+      truck: "",
+      issue: "",
+      drop: "",
+      media: []
+    }
+  };
 }
 
-function saveSession(id: number, s: any) {
-  sessions.set(id, structuredClone(s));
+async function sessionStore() {
+  if (!kvStorePromise) {
+    kvStorePromise = Deno.openKv().catch((error) => {
+      console.error("Deno KV unavailable; using in-memory sessions only", error);
+      return null;
+    });
+  }
+
+  return await kvStorePromise;
+}
+
+async function getSession(id: number) {
+  const store = await sessionStore();
+
+  if (store) {
+    const result = await store.get(["sessions", id]);
+    if (result.value) {
+      const saved = structuredClone(result.value);
+      sessions.set(id, saved);
+      return structuredClone(saved);
+    }
+  }
+
+  const session = sessions.get(id) || newSession();
+  sessions.set(id, structuredClone(session));
+  return structuredClone(session);
+}
+
+async function saveSession(id: number, s: any) {
+  const session = structuredClone(s);
+  sessions.set(id, session);
+
+  const store = await sessionStore();
+  if (store) {
+    await store.set(["sessions", id], session);
+  }
 }
 
 // ===== SEND =====
@@ -75,7 +107,7 @@ Deno.serve(async (req) => {
 
   // ================= CALLBACK =================
   if (cb) {
-    const s = getSession(cb.from.id);
+    const s = await getSession(cb.from.id);
 
     if (cb.data === "confirm") {
       await send(GROUP, card(s));
@@ -83,6 +115,7 @@ Deno.serve(async (req) => {
 
       s.step = 1;
       s.data = { name: "", truck: "", issue: "", drop: "", media: [] };
+      await saveSession(cb.from.id, s);
 
       await send(cb.message.chat.id, "Заявка отправлена", {
         inline_keyboard: [[
@@ -94,9 +127,10 @@ Deno.serve(async (req) => {
     }
 
     if (cb.data === "new") {
-      const s2 = getSession(cb.from.id);
+      const s2 = await getSession(cb.from.id);
       s2.step = 1;
       s2.data = { name: "", truck: "", issue: "", drop: "", media: [] };
+      await saveSession(cb.from.id, s2);
 
       await send(cb.message.chat.id, "Введите имя и фамилию");
       return new Response("ok");
@@ -108,13 +142,14 @@ Deno.serve(async (req) => {
   // ❗ игнор групп
   if (msg.chat.type !== "private") return new Response("ok");
 
-  const s = getSession(msg.from.id);
+  const s = await getSession(msg.from.id);
   const text = msg.text?.trim() || "";
 
   // ================= FLOW =================
   if (text === "/start") {
     s.step = 1;
-    saveSession(msg.from.id, s);
+    s.data = { name: "", truck: "", issue: "", drop: "", media: [] };
+    await saveSession(msg.from.id, s);
     await send(msg.chat.id, "Введите имя и фамилию");
     return new Response("ok");
   }
@@ -122,7 +157,7 @@ Deno.serve(async (req) => {
   if (s.step === 1) {
     s.data.name = text;
     s.step = 2;
-    saveSession(msg.from.id, s);
+    await saveSession(msg.from.id, s);
     await send(msg.chat.id, "Введите номер трака");
     return new Response("ok");
   }
@@ -130,7 +165,7 @@ Deno.serve(async (req) => {
   if (s.step === 2) {
     s.data.truck = text;
     s.step = 3;
-    saveSession(msg.from.id, s);
+    await saveSession(msg.from.id, s);
     await send(msg.chat.id, "Опишите поломки");
     return new Response("ok");
   }
@@ -138,7 +173,7 @@ Deno.serve(async (req) => {
   if (s.step === 3) {
     s.data.issue = text;
     s.step = 4;
-    saveSession(msg.from.id, s);
+    await saveSession(msg.from.id, s);
     await send(msg.chat.id, "Когда оставляет трак?");
     return new Response("ok");
   }
@@ -146,7 +181,7 @@ Deno.serve(async (req) => {
   if (s.step === 4) {
     s.data.drop = text;
     s.step = 5;
-    saveSession(msg.from.id, s);
+    await saveSession(msg.from.id, s);
     await send(msg.chat.id, "Отправьте фото или видео поломки");
     return new Response("ok");
   }
@@ -160,7 +195,7 @@ Deno.serve(async (req) => {
       : { type: "video", file_id: msg.video.file_id };
 
     s.data.media.push(item);
-    saveSession(msg.from.id, s);
+    await saveSession(msg.from.id, s);
 
     // ❗ ВАЖНО: карточка только 1 раз, после первого медиа
     if (s.data.media.length === 1) {
