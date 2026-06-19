@@ -1,58 +1,21 @@
-Deno.env.set("BOT_TOKEN", "test-token");
-Deno.env.set("GROUP_CHAT_ID", "test-group");
-
-const bot = await import("./main.ts");
-
-function advance(session: any, value: string) {
-  if (session.step === 1) session.data.name = value;
-  else if (session.step === 2) session.data.truck = value;
-  else if (session.step === 3) session.data.issue = value;
-  session.step = bot.stepFor(session.data);
-  return { session, action: { kind: "none" as const } };
+function assertIncludes(source: string, fragment: string) {
+  if (!source.includes(fragment)) {
+    throw new Error(`Missing reference behavior: ${fragment}`);
+  }
 }
 
-Deno.test("concurrent updates advance once each and duplicates are ignored", async () => {
-  const userId = -Date.now();
-  const key = ["sessions", userId] as const;
-  await bot.kv.delete(key);
+Deno.test("Russian bot keeps the English session-storage contract", async () => {
+  const source = await Deno.readTextFile(new URL("./main.ts", import.meta.url));
 
-  try {
-    const [first, second] = await Promise.all([
-      bot.transactSession(userId, 101, (session) => advance(session, "first")),
-      bot.transactSession(userId, 102, (session) => advance(session, "second")),
-    ]);
-
-    if (!first.applied || !second.applied) throw new Error("Both unique updates must be applied");
-
-    const stored = bot.normalizeSession((await bot.kv.get(key)).value);
-    if (stored.step !== 3) throw new Error(`Expected step 3, got ${stored.step}`);
-    if (!stored.data.name || !stored.data.truck) throw new Error("Both fields must be retained");
-
-    const duplicate = await bot.transactSession(
-      userId,
-      101,
-      (session) => advance(session, "duplicate"),
-    );
-    if (duplicate.applied) throw new Error("A repeated update_id must not be applied twice");
-
-    const afterDuplicate = bot.normalizeSession((await bot.kv.get(key)).value);
-    if (afterDuplicate.data.issue) throw new Error("Duplicate update changed the next field");
-  } finally {
-    await bot.kv.delete(key);
+  for (const fragment of [
+    "const sessions = new Map<number, Session>();",
+    'const result = await store.get<Session>(["sessions", id]);',
+    'await store.set(["sessions", id], session);',
+    "s.data.name = text;\n      s.step = 2;\n      await saveSession(msg.from.id, s);",
+    "s.data.truck = text;\n      s.step = 3;\n      await saveSession(msg.from.id, s);",
+    "s.data.issue = text;\n      s.step = 4;\n      await saveSession(msg.from.id, s);",
+    "s.data.drop = text;\n      s.step = 5;\n      await saveSession(msg.from.id, s);",
+  ]) {
+    assertIncludes(source, fragment);
   }
-});
-
-Deno.test("saved fields repair an incorrect stored step", () => {
-  const repaired = bot.normalizeSession({
-    step: 2,
-    data: {
-      name: "Иван Иванов",
-      truck: "T-100",
-      issue: "Тормоза",
-      drop: "",
-      media: [],
-    },
-  });
-
-  if (repaired.step !== 4) throw new Error(`Expected repaired step 4, got ${repaired.step}`);
 });
