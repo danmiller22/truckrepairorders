@@ -1,251 +1,398 @@
-const TOKEN = Deno.env.get("BOT_TOKEN")!;
-const GROUP = Deno.env.get("GROUP_CHAT_ID")!;
+type MediaItem = {
+  type: "photo" | "video";
+  file_id: string;
+};
 
-// ===== STATE =====
-const sessions = new Map<number, any>();
-let kvStorePromise: Promise<any | null> | undefined;
+type ReportData = {
+  name: string;
+  truck: string;
+  issue: string;
+  drop: string;
+  media: MediaItem[];
+};
 
-function emptyData(name = "") {
-  return {
-    name,
-    truck: "",
-    issue: "",
-    drop: "",
-    media: []
+type PendingSubmission = {
+  id: number;
+  data: ReportData;
+};
+
+type Session = {
+  step: number;
+  data: ReportData;
+  processedUpdateIds: number[];
+  pendingSubmission?: PendingSubmission;
+};
+
+type Action =
+  | { kind: "none" }
+  | { kind: "prompt"; text: string }
+  | { kind: "confirmation"; session: Session }
+  | { kind: "submit"; submission: PendingSubmission };
+
+const TOKEN = requireEnv("BOT_TOKEN");
+const GROUP = requireEnv("GROUP_CHAT_ID");
+export const kv = await Deno.openKv();
+const MAX_TRANSACTION_ATTEMPTS = 20;
+const MAX_PROCESSED_UPDATE_IDS = 50;
+
+function env(name: string) {
+  return Deno.env.get(name)?.trim() || "";
+}
+
+function requireEnv(name: string) {
+  const value = env(name);
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
+}
+
+function emptyData(name = ""): ReportData {
+  return { name, truck: "", issue: "", drop: "", media: [] };
+}
+
+export function stepFor(data: ReportData) {
+  if (!data.name) return 1;
+  if (!data.truck) return 2;
+  if (!data.issue) return 3;
+  if (!data.drop) return 4;
+  return 5;
+}
+
+export function normalizeSession(value: unknown): Session {
+  const saved = value && typeof value === "object" ? value as Record<string, any> : {};
+  const rawData = saved.data && typeof saved.data === "object" ? saved.data : {};
+  const media = Array.isArray(rawData.media)
+    ? rawData.media.filter((item: any) =>
+      item &&
+      (item.type === "photo" || item.type === "video") &&
+      typeof item.file_id === "string"
+    )
+    : [];
+
+  const data: ReportData = {
+    name: typeof rawData.name === "string" ? rawData.name : "",
+    truck: typeof rawData.truck === "string" ? rawData.truck : "",
+    issue: typeof rawData.issue === "string" ? rawData.issue : "",
+    drop: typeof rawData.drop === "string" ? rawData.drop : "",
+    media,
   };
-}
 
-function newSession() {
-  return {
-    step: 1,
-    data: emptyData()
+  const processedUpdateIds = Array.isArray(saved.processedUpdateIds)
+    ? saved.processedUpdateIds.filter((id: unknown) => Number.isSafeInteger(id)).slice(-MAX_PROCESSED_UPDATE_IDS)
+    : [];
+
+  const session: Session = {
+    step: stepFor(data),
+    data,
+    processedUpdateIds,
   };
-}
 
-async function sessionStore() {
-  if (!kvStorePromise) {
-    kvStorePromise = Deno.openKv().catch((error) => {
-      console.error("Deno KV unavailable; using in-memory sessions only", error);
-      return null;
-    });
+  const pending = saved.pendingSubmission;
+  if (pending && Number.isSafeInteger(pending.id) && pending.data) {
+    session.pendingSubmission = {
+      id: pending.id,
+      data: normalizeSession({ data: pending.data }).data,
+    };
   }
 
-  return await kvStorePromise;
+  return session;
 }
 
-async function getSession(id: number) {
-  const store = await sessionStore();
-
-  if (store) {
-    const result = await store.get(["sessions", id]);
-    if (result.value) {
-      const saved = structuredClone(result.value);
-      sessions.set(id, saved);
-      return structuredClone(saved);
-    }
-  }
-
-  const session = sessions.get(id) || newSession();
-  sessions.set(id, structuredClone(session));
-  return structuredClone(session);
-}
-
-async function saveSession(id: number, s: any) {
-  const session = structuredClone(s);
-  sessions.set(id, session);
-
-  const store = await sessionStore();
-  if (store) {
-    await store.set(["sessions", id], session);
-  }
-}
-
-// ===== SEND =====
-async function send(chat: string, text: string, keyboard?: any) {
-  await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chat,
-      text,
-      reply_markup: keyboard
-    })
-  });
-}
-
-async function sendMedia(items: any[]) {
-  if (!items.length) return;
-
-  await fetch(`https://api.telegram.org/bot${TOKEN}/sendMediaGroup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: GROUP,
-      media: items.map((m, i) => ({
-        type: m.type,
-        media: m.file_id,
-        caption: i === 0 ? "📎 Поломки" : undefined
-      }))
-    })
-  });
-}
-
-// ===== CARD =====
-function card(s: any) {
-  return `🚛 Новый репорт
-
-имя - ${s.data.name || "—"}
-трак - ${s.data.truck || "—"}
-поломка - ${s.data.issue || "—"}
-
-файлы - ${s.data.media.length}
-
-когда оставляет трак - ${s.data.drop || "—"}`;
-}
-
-async function sendCurrentPrompt(chat: string, s: any) {
+function promptFor(session: Session) {
   const prompts: Record<number, string> = {
     1: "Введите имя и фамилию",
     2: "Введите номер трака",
     3: "Опишите поломки",
     4: "Когда оставляет трак?",
-    5: "Отправьте фото или видео поломки"
+    5: "Отправьте фото или видео поломки",
   };
 
-  await send(chat, prompts[s.step] || prompts[1]);
+  return prompts[session.step] || prompts[1];
 }
 
-// ===== SERVER =====
-Deno.serve(async (req) => {
-  const u = await req.json();
-  const msg = u.message;
-  const cb = u.callback_query;
+export async function transactSession(
+  userId: number,
+  updateId: number,
+  change: (session: Session) => { session: Session; action: Action },
+) {
+  const key = ["sessions", userId] as const;
 
-  // ================= CALLBACK =================
-  if (cb) {
-    const s = await getSession(cb.from.id);
+  for (let attempt = 0; attempt < MAX_TRANSACTION_ATTEMPTS; attempt++) {
+    const entry = await kv.get<Session>(key, { consistency: "strong" });
+    const current = normalizeSession(entry.value);
 
-    if (cb.data === "confirm") {
-      await send(GROUP, card(s));
-      await sendMedia(s.data.media);
-
-      // Keep the driver's name for the next report, but clear report-specific data.
-      s.step = 2;
-      s.data = emptyData(s.data.name);
-      await saveSession(cb.from.id, s);
-
-      await send(cb.message.chat.id, "Заявка отправлена", {
-        inline_keyboard: [[
-          { text: "Создать новый репорт", callback_data: "new" }
-        ]]
-      });
-
-      return new Response("ok");
+    if (current.processedUpdateIds.includes(updateId)) {
+      return { applied: false, session: current, action: { kind: "none" } as Action };
     }
 
+    const changed = change(structuredClone(current));
+    const next = normalizeSession(changed.session);
+    next.processedUpdateIds = [
+      ...current.processedUpdateIds,
+      updateId,
+    ].slice(-MAX_PROCESSED_UPDATE_IDS);
+
+    const committed = await kv.atomic()
+      .check({ key, versionstamp: entry.versionstamp })
+      .set(key, next)
+      .commit();
+
+    if (committed.ok) {
+      return { applied: true, session: next, action: changed.action };
+    }
+  }
+
+  throw new Error(`Could not update session for user ${userId} after repeated conflicts`);
+}
+
+async function clearPendingSubmission(userId: number, submissionId: number) {
+  const key = ["sessions", userId] as const;
+
+  for (let attempt = 0; attempt < MAX_TRANSACTION_ATTEMPTS; attempt++) {
+    const entry = await kv.get<Session>(key, { consistency: "strong" });
+    const session = normalizeSession(entry.value);
+
+    if (session.pendingSubmission?.id !== submissionId) return;
+
+    delete session.pendingSubmission;
+    const committed = await kv.atomic()
+      .check({ key, versionstamp: entry.versionstamp })
+      .set(key, session)
+      .commit();
+
+    if (committed.ok) return;
+  }
+
+  throw new Error(`Could not finish submission ${submissionId} for user ${userId}`);
+}
+
+async function telegram(method: string, payload: Record<string, unknown>) {
+  const response = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Telegram ${method} failed: ${response.status} ${body}`);
+  }
+
+  return body;
+}
+
+async function send(chat: number | string, text: string, keyboard?: Record<string, unknown>) {
+  await telegram("sendMessage", {
+    chat_id: chat,
+    text,
+    reply_markup: keyboard,
+  });
+}
+
+async function answerCallback(id: string) {
+  await telegram("answerCallbackQuery", { callback_query_id: id });
+}
+
+async function sendSingleMedia(item: MediaItem) {
+  if (item.type === "photo") {
+    await telegram("sendPhoto", {
+      chat_id: GROUP,
+      photo: item.file_id,
+      caption: "📎 Поломки",
+    });
+    return;
+  }
+
+  await telegram("sendVideo", {
+    chat_id: GROUP,
+    video: item.file_id,
+    caption: "📎 Поломки",
+  });
+}
+
+async function sendMedia(items: MediaItem[]) {
+  if (!items.length) return;
+  if (items.length === 1) return await sendSingleMedia(items[0]);
+
+  for (let index = 0; index < items.length; index += 10) {
+    const group = items.slice(index, index + 10);
+    if (group.length === 1) {
+      await sendSingleMedia(group[0]);
+      continue;
+    }
+
+    await telegram("sendMediaGroup", {
+      chat_id: GROUP,
+      media: group.map((item, itemIndex) => ({
+        type: item.type,
+        media: item.file_id,
+        caption: index === 0 && itemIndex === 0 ? "📎 Поломки" : undefined,
+      })),
+    });
+  }
+}
+
+function card(data: ReportData) {
+  return `🚛 Новый репорт
+
+имя - ${data.name || "—"}
+трак - ${data.truck || "—"}
+поломка - ${data.issue || "—"}
+
+файлы - ${data.media.length}
+
+когда оставляет трак - ${data.drop || "—"}`;
+}
+
+function confirmationKeyboard() {
+  return {
+    inline_keyboard: [[
+      { text: "Подтвердить", callback_data: "confirm" },
+    ]],
+  };
+}
+
+async function executeAction(chatId: number | string, action: Action, userId: number) {
+  if (action.kind === "none") return;
+  if (action.kind === "prompt") return await send(chatId, action.text);
+  if (action.kind === "confirmation") {
+    return await send(chatId, card(action.session.data), confirmationKeyboard());
+  }
+
+  await send(GROUP, card(action.submission.data));
+  await sendMedia(action.submission.data.media);
+  await clearPendingSubmission(userId, action.submission.id);
+  await send(chatId, "Заявка отправлена", {
+    inline_keyboard: [[
+      { text: "Создать новый репорт", callback_data: "new" },
+    ]],
+  });
+}
+
+async function handleCallback(updateId: number, cb: any) {
+  await answerCallback(cb.id);
+
+  const transition = await transactSession(cb.from.id, updateId, (session) => {
     if (cb.data === "new") {
-      s.step = s.data.name ? 2 : 1;
-      s.data = emptyData(s.data.name);
-      await saveSession(cb.from.id, s);
-
-      await sendCurrentPrompt(cb.message.chat.id, s);
-      return new Response("ok");
+      session.data = emptyData(session.data.name);
+      session.step = stepFor(session.data);
+      return { session, action: { kind: "prompt", text: promptFor(session) } };
     }
+
+    if (cb.data === "confirm" && session.step === 5 && session.data.media.length) {
+      const submission: PendingSubmission = {
+        id: updateId,
+        data: structuredClone(session.data),
+      };
+      session.pendingSubmission = submission;
+      session.data = emptyData(session.data.name);
+      session.step = stepFor(session.data);
+      return { session, action: { kind: "submit", submission } };
+    }
+
+    return { session, action: { kind: "prompt", text: promptFor(session) } };
+  });
+
+  let action = transition.action;
+  if (
+    !transition.applied &&
+    cb.data === "confirm" &&
+    transition.session.pendingSubmission?.id === updateId
+  ) {
+    action = { kind: "submit", submission: transition.session.pendingSubmission };
   }
 
-  if (!msg) return new Response("ok");
+  await executeAction(cb.message.chat.id, action, cb.from.id);
+}
 
-  // ❗ игнор групп
-  if (msg.chat.type !== "private") return new Response("ok");
+async function handleMessage(updateId: number, msg: any) {
+  if (msg.chat.type !== "private") return;
 
-  const s = await getSession(msg.from.id);
   const text = msg.text?.trim() || "";
-
-  // ================= FLOW =================
-  if (text === "/start") {
-    // Resume the persisted draft instead of erasing fields already entered.
-    if (!s.data.name && s.step !== 1) {
-      s.step = 1;
-      await saveSession(msg.from.id, s);
-    }
-    await sendCurrentPrompt(msg.chat.id, s);
-    return new Response("ok");
-  }
-
-  if (s.step === 1) {
-    if (!text) {
-      await send(msg.chat.id, "Введите имя и фамилию текстом");
-      return new Response("ok");
+  const transition = await transactSession(msg.from.id, updateId, (session) => {
+    if (text === "/start") {
+      return { session, action: { kind: "prompt", text: promptFor(session) } };
     }
 
-    s.data.name = text;
-    s.step = 2;
-    await saveSession(msg.from.id, s);
-    await send(msg.chat.id, "Введите номер трака");
-    return new Response("ok");
-  }
+    if (session.step === 1) {
+      if (!text) {
+        return { session, action: { kind: "prompt", text: "Введите имя и фамилию текстом" } };
+      }
+      session.data.name = text;
+    } else if (session.step === 2) {
+      if (!text) {
+        return { session, action: { kind: "prompt", text: "Введите номер трака текстом" } };
+      }
+      session.data.truck = text;
+    } else if (session.step === 3) {
+      if (!text) {
+        return { session, action: { kind: "prompt", text: "Опишите поломки текстом" } };
+      }
+      session.data.issue = text;
+    } else if (session.step === 4) {
+      if (!text) {
+        return { session, action: { kind: "prompt", text: "Напишите, когда оставите трак" } };
+      }
+      session.data.drop = text;
+    } else {
+      if (!msg.photo && !msg.video) {
+        return { session, action: { kind: "prompt", text: "Отправьте фото или видео поломки" } };
+      }
 
-  if (s.step === 2) {
-    if (!text) {
-      await send(msg.chat.id, "Введите номер трака текстом");
-      return new Response("ok");
+      const media: MediaItem = msg.photo
+        ? { type: "photo", file_id: msg.photo.at(-1).file_id }
+        : { type: "video", file_id: msg.video.file_id };
+      session.data.media.push(media);
+      session.step = stepFor(session.data);
+
+      const action: Action = session.data.media.length === 1
+        ? { kind: "confirmation", session: structuredClone(session) }
+        : { kind: "none" };
+      return { session, action };
     }
 
-    s.data.truck = text;
-    s.step = 3;
-    await saveSession(msg.from.id, s);
-    await send(msg.chat.id, "Опишите поломки");
-    return new Response("ok");
-  }
+    session.step = stepFor(session.data);
+    return { session, action: { kind: "prompt", text: promptFor(session) } };
+  });
 
-  if (s.step === 3) {
-    if (!text) {
-      await send(msg.chat.id, "Опишите поломки текстом");
-      return new Response("ok");
+  if (transition.applied) {
+    await executeAction(msg.chat.id, transition.action, msg.from.id);
+  }
+}
+
+export async function handler(req: Request) {
+  const url = new URL(req.url);
+
+  if (req.method === "GET") {
+    if (url.pathname === "/storage-info") {
+      await kv.get(["health", "storage"], { consistency: "strong" });
+      return Response.json({ ok: true, storage: "deno_kv", atomic: true });
     }
 
-    s.data.issue = text;
-    s.step = 4;
-    await saveSession(msg.from.id, s);
-    await send(msg.chat.id, "Когда оставляет трак?");
-    return new Response("ok");
+    return Response.json({ service: "truckrepairorders", ok: true });
   }
 
-  if (s.step === 4) {
-    if (!text) {
-      await send(msg.chat.id, "Напишите, когда оставите трак");
-      return new Response("ok");
-    }
-
-    s.data.drop = text;
-    s.step = 5;
-    await saveSession(msg.from.id, s);
-    await send(msg.chat.id, "Отправьте фото или видео поломки");
-    return new Response("ok");
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
   }
 
-  // ================= MEDIA =================
-  if (s.step === 5) {
-    if (!msg.photo && !msg.video) return new Response("ok");
+  try {
+    const update = await req.json();
+    const updateId = update.update_id;
+    if (!Number.isSafeInteger(updateId)) return new Response("bad update", { status: 400 });
 
-    const item = msg.photo
-      ? { type: "photo", file_id: msg.photo.at(-1).file_id }
-      : { type: "video", file_id: msg.video.file_id };
-
-    s.data.media.push(item);
-    await saveSession(msg.from.id, s);
-
-    // ❗ ВАЖНО: карточка только 1 раз, после первого медиа
-    if (s.data.media.length === 1) {
-      await send(msg.chat.id, card(s), {
-        inline_keyboard: [[
-          { text: "Подтвердить", callback_data: "confirm" }
-        ]]
-      });
+    if (update.callback_query) {
+      await handleCallback(updateId, update.callback_query);
+    } else if (update.message) {
+      await handleMessage(updateId, update.message);
     }
 
     return new Response("ok");
+  } catch (error) {
+    console.error("Update handling failed", error);
+    return new Response("error", { status: 500 });
   }
+}
 
-  return new Response("ok");
-});
+if (import.meta.main) {
+  Deno.serve(handler);
+}
