@@ -380,13 +380,13 @@ Deno.serve(async (req) => {
       s.data.issue = text;
       s.step = 4;
       await saveSession(msg.from.id, s);
-      await send(msg.chat.id, "Когда оставляет трак?");
+      await send(msg.chat.id, "Когда оставляете трак?");
       return new Response("ok");
     }
 
     if (s.step === 4) {
       if (!text) {
-        await send(msg.chat.id, "Напишите, когда оставите трак");
+        await send(msg.chat.id, "Напишите, когда оставляете трак");
         return new Response("ok");
       }
 
